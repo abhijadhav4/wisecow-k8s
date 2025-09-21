@@ -1,0 +1,57 @@
+name: CI/CD Build & Deploy
+
+on:
+  push:
+    branches:
+      - main
+      - master
+
+jobs:
+  upload-image-info:
+    name: Upload image info
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/upload-artifact@v4
+        with:
+          name: image-info
+          path: |
+            # specify the path to the image info file here
+
+  deploy:
+    needs: upload-image-info
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'latest'
+          
+      - name: Restore Kubeconfig
+        env:
+          KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG }}
+        run: |
+          echo "$KUBE_CONFIG_DATA" | base64 --decode > kubeconfig
+          export KUBECONFIG=$PWD/kubeconfig
+          kubectl version --client
+          
+      - name: Apply namespace and manifests
+        env:
+          IMAGE: ${{ env.IMAGE_NAME }}:latest
+        run: |
+          export KUBECONFIG=$PWD/kubeconfig
+          kubectl apply -f k8s/namespace.yaml
+          # apply the service and deployment manifests
+          kubectl apply -f k8s/service.yaml
+          kubectl apply -f k8s/deployment.yaml
+          
+      - name: Force rollout to pick up new image
+        env:
+          IMAGE: ${{ env.IMAGE_NAME }}:latest
+        run: |
+          export KUBECONFIG=$PWD/kubeconfig
+          kubectl -n wisecow set image deployment/wisecow-deployment wisecow=${{ env.IMAGE }} --record || true
+          kubectl -n wisecow rollout status deployment/wisecow-deployment --timeout=120s
